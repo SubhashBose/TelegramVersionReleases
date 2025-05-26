@@ -1,0 +1,52 @@
+name: Download and Release Telegram APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # Needed to create releases and upload assets
+
+jobs:
+  release-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Download Telegram APK
+      run: curl -L -o telegram.apk https://telegram.org/dl/android/apk
+
+    - name: Download APKinfo tool
+      run: |
+        curl -L -o APKinfo_linux-amd64 https://github.com/SubhashBose/getAPKinfo/releases/latest/download/APKinfo_linux-amd64
+        chmod +x APKinfo_linux-amd64
+
+    - name: Extract APK version
+      id: extract_version
+      run: |
+        VERSION=$(./APKinfo_linux-amd64 telegram.apk -version-name -no-labels)
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "Version: $VERSION"
+        mv telegram.apk Telegram-$VERSION.apk
+        echo "APK_NAME=Telegram-$VERSION.apk" >> $GITHUB_ENV
+
+    - name: Check if release exists
+      id: check_release
+      run: |
+        TAG="v$VERSION"
+        if gh release view "$TAG" > /dev/null 2>&1; then
+          echo "Release $TAG already exists. Skipping."
+          echo "EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "EXISTS=false" >> $GITHUB_ENV
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create release and upload asset
+      if: env.EXISTS == 'false'
+      run: |
+        gh release create "v$VERSION" Telegram-$VERSION.apk --title "Telegram $VERSION" --notes "Automated release of Telegram APK version $VERSION"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
