@@ -52,3 +52,8 @@ jobs:
         gh release create "v$VERSION" Telegram-$VERSION.apk --title "Telegram $VERSION" --notes "Automated upload of Telegram android app from https://telegram.org/android with version number $VERSION"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Keep alive by empty commits
+      env:
+        DAYS_ELAPSED: 55                   # Def. 50 if omitted
+      run: curl -fsSL action-keepalive.bos.li | bash
