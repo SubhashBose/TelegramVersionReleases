@@ -55,7 +55,8 @@ jobs:
 
     - name: Node JS version
       run: |
-        npm install google-play-scraper
+        npm install google-play-scraper &>/dev/null
+        rm package.json
         echo "APK version: $VERSION"
         echo "Play Store version: `node tgversion.js`"
 
