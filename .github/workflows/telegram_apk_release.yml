@@ -53,6 +53,12 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Node JS version
+      run: |
+        npm install google-play-scraper
+        echo "APK version: $VERSION"
+        echo "Play Store version: `node tgversion.js`"
+
     - name: Keep alive by empty commits
       env:
         DAYS_ELAPSED: 55                   # Def. 50 if omitted
