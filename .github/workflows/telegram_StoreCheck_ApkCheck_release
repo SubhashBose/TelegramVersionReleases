@@ -1,0 +1,155 @@
+name: Download and Release Telegram APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Download and check the APK even if the Play Store version is not newer'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 */4 * * *'  # Every 4 hours
+
+permissions:
+  contents: write  # Needed to create releases and upload assets
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  release-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # 1. What is the newest version we have already published?
+    - name: Get latest released version
+      id: latest
+      run: |
+        LATEST=$(gh release list --limit 100 --json tagName --jq '.[].tagName' \
+                 | sed 's/^v//' | grep -E '^[0-9]+(\.[0-9]+)*$' | sort -V | tail -n1)
+        LATEST=${LATEST:-0}
+        echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+        echo "Latest published release: $LATEST"
+
+    # 2. Cheap check first: what does the Play Store say?
+    - name: Check Play Store version
+      id: play
+      run: |
+        npm install --no-save google-play-scraper >/dev/null 2>&1
+        PLAY=$(node tgversion.js | tr -d '[:space:]')
+        echo "play=$PLAY" >> "$GITHUB_OUTPUT"
+        echo "Play Store version: $PLAY"
+
+    # 3. Decide whether it is worth downloading ~80 MB of APK
+    - name: Decide whether to download
+      id: gate
+      env:
+        LATEST: ${{ steps.latest.outputs.latest }}
+        PLAY: ${{ steps.play.outputs.play }}
+        FORCE: ${{ inputs.force }}
+      run: |
+        newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]; }
+
+        if [ "$FORCE" = "true" ]; then
+          echo "Forced run - downloading regardless."
+          PROCEED=true
+        elif ! printf '%s' "$PLAY" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+          echo "Could not parse Play Store version ('$PLAY') - downloading anyway to be safe."
+          PROCEED=true
+        elif newer "$PLAY" "$LATEST"; then
+          echo "Play Store $PLAY > released $LATEST - downloading."
+          PROCEED=true
+        else
+          echo "Play Store $PLAY is not newer than released $LATEST - nothing to do."
+          PROCEED=false
+        fi
+        echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
+
+    - name: Download Telegram APK
+      if: steps.gate.outputs.proceed == 'true'
+      run: |
+        download() {
+          rm -f telegram.apk
+          curl -fL --connect-timeout 20 --max-time 900 \
+               -o telegram.apk https://telegram.org/dl/android/apk || return $?
+          # curl 18 (partial file) still leaves a truncated APK behind, and a
+          # short read can also end cleanly, so verify the archive itself.
+          unzip -t telegram.apk >/dev/null 2>&1 || return 1
+        }
+
+        if ! download; then
+          echo "::warning::APK download failed or was incomplete - retrying in 5s"
+          sleep 5
+          download || { echo "::error::APK download failed twice - giving up."; exit 1; }
+        fi
+
+        ls -lh telegram.apk
+
+    - name: Download APKinfo tool
+      if: steps.gate.outputs.proceed == 'true'
+      run: |
+        curl -fL -o APKinfo_linux-amd64 https://github.com/SubhashBose/getAPKinfo/releases/latest/download/APKinfo_linux-amd64
+        chmod +x APKinfo_linux-amd64
+
+    # 4. Second gate: is the APK we actually downloaded newer?
+    - name: Extract APK version
+      id: apk
+      if: steps.gate.outputs.proceed == 'true'
+      env:
+        LATEST: ${{ steps.latest.outputs.latest }}
+      run: |
+        newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]; }
+
+        VERSION=$(./APKinfo_linux-amd64 telegram.apk -version-name -no-labels | tr -d '[:space:]')
+        echo "APK version: $VERSION"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+        if [ -z "$VERSION" ]; then
+          echo "::error::Could not read a version from the APK."
+          exit 1
+        fi
+
+        if gh release view "v$VERSION" >/dev/null 2>&1; then
+          echo "Release v$VERSION already exists - skipping."
+          echo "release=false" >> "$GITHUB_OUTPUT"
+        elif newer "$VERSION" "$LATEST"; then
+          mv telegram.apk "Telegram-$VERSION.apk"
+          echo "APK $VERSION > released $LATEST - will publish."
+          echo "release=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "APK $VERSION is not newer than released $LATEST - skipping."
+          echo "release=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Create release and upload asset
+      if: steps.apk.outputs.release == 'true'
+      env:
+        VERSION: ${{ steps.apk.outputs.version }}
+      run: |
+        gh release create "v$VERSION" "Telegram-$VERSION.apk" \
+          --title "Telegram $VERSION" \
+          --notes "Automated upload of Telegram android app from https://telegram.org/android with version number $VERSION"
+
+    - name: Summary
+      if: always()
+      env:
+        LATEST: ${{ steps.latest.outputs.latest }}
+        PLAY: ${{ steps.play.outputs.play }}
+        APK: ${{ steps.apk.outputs.version }}
+      run: |
+        {
+          echo "| Source | Version |"
+          echo "| --- | --- |"
+          echo "| Last release | ${LATEST:-n/a} |"
+          echo "| Play Store | ${PLAY:-n/a} |"
+          echo "| Downloaded APK | ${APK:-not downloaded} |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Keep alive by empty commits
+      if: always()
+      env:
+        DAYS_ELAPSED: 55                   # Def. 50 if omitted
+      run: curl -fsSL action-keepalive.bos.li | bash
