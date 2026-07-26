@@ -1,4 +1,4 @@
-name: Download and Release Telegram APK
+name: Storecheck -> Download apk -> Release new Telegram APK
 
 on:
   workflow_dispatch:
